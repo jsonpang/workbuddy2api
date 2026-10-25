@@ -1,8 +1,9 @@
 """Apply the source fix to the existing Python 3.10 PyInstaller executable.
 
-Preserves every original archive member except the two growth modules. In
-particular, executes the original backend module before adding the new method,
-so newer fork code cannot replace unrelated installed behavior.
+Preserves every original archive member except the growth modules and the
+proxy selector. Executes the original backend and proxy modules before adding
+the new methods / wrapping the login-dead check, so newer fork code cannot
+replace unrelated installed behavior.
 """
 import argparse
 import ast
@@ -51,9 +52,30 @@ def patch(input_path, output_path, baseline_source):
     rebuilt, table, changed = bytearray(pyz[:12]), [], []
     for name, (kind, offset, length) in modules:
         packed = pyz[offset:offset + length]
-        if name in ("admin.growth_plans", "admin.backend"):
+        if name in ("admin.growth_plans", "admin.backend", "admin.routers.proxy"):
             original = marshal.loads(zlib.decompress(packed))
-            if name == "admin.growth_plans":
+            if name == "admin.routers.proxy":
+                # The installed selector predates the fork's; wrap it instead of replacing it.
+                tree = ast.parse((root / "admin/routers/proxy.py").read_text(encoding="utf-8"))
+                const = next(n for n in tree.body if isinstance(n, ast.AnnAssign | ast.Assign)
+                             and "_LOGIN_DEAD_RECHECK" in ast.unparse(n).split("=")[0])
+                helper = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
+                              and n.name == "_login_dead_marker_stale")
+                for arg in helper.args.args:
+                    arg.annotation = None
+                helper.returns = None
+                wrapper = compile(
+                    "exec('__ORIGINAL_BACKEND_CODE__')\nfrom datetime import timedelta\n"
+                    + ast.unparse(const) + "\n" + ast.unparse(helper)
+                    + "\n_original_looks_login_dead = _looks_login_dead\n"
+                    "def _looks_login_dead(acc, now):\n"
+                    "    if _login_dead_marker_stale(acc, now):\n"
+                    "        return False\n"
+                    "    return _original_looks_login_dead(acc, now)\n",
+                    original.co_filename, "exec")
+                replacement = wrapper.replace(co_consts=tuple(original if c == "__ORIGINAL_BACKEND_CODE__" else c
+                                                               for c in wrapper.co_consts))
+            elif name == "admin.growth_plans":
                 baseline = compile((baseline_source / "admin/growth_plans.py").read_bytes(), original.co_filename, "exec")
                 assert semantic(original) == semantic(baseline), "Fork strategy module differs from installed version"
                 replacement = compile((root / "admin/growth_plans.py").read_bytes(), original.co_filename, "exec")

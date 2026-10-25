@@ -1830,6 +1830,20 @@ _LOGIN_DEAD_MARKERS = (
     "http 401",
 )
 
+#: 登录失效标记的复核间隔。被排除的号不会再被选中，也就不会再有成功请求
+#: 来清掉标记 —— 不设期限时一次 401 就把号永久锁死（10-23 整池 no_account）。
+#: 过了这个间隔放行一次真实请求复核：真失效会立刻重写标记再排除，
+#: 计数照常累积到禁用阈值；凭证其实可用则恢复调度。
+_LOGIN_DEAD_RECHECK = timedelta(minutes=30)
+
+
+def _login_dead_marker_stale(acc: Account, now: datetime) -> bool:
+    """登录失效标记已超过复核间隔，应放行一次请求重新验证。"""
+    if (getattr(acc, "status", "active") or "active") != "active":
+        return False
+    last_err = getattr(acc, "last_err_at", None)
+    return last_err is not None and now - last_err >= _LOGIN_DEAD_RECHECK
+
 
 def _looks_login_dead(acc: Account, now: datetime) -> bool:
     """该账号是否已被**确证**登录态失效（应从选号中排除）。
@@ -1848,6 +1862,8 @@ def _looks_login_dead(acc: Account, now: datetime) -> bool:
     # 把候选全部排掉（那会让选号直接返回 None，比漏过一个坏号更严重）。
     if (getattr(acc, "status", "active") or "active") != "active":
         return True                      # 已禁用/停用，本就不该被选
+    if _login_dead_marker_stale(acc, now):
+        return False
     if (getattr(acc, 'last_used_at', None) and getattr(acc, 'last_err_at', None)
             and acc.last_used_at > acc.last_err_at):
         return False
