@@ -1066,7 +1066,37 @@ class AccountSession:
         return self.report_billing_event([ev])
 
     def fire_douyin_expert(self) -> dict:
-        """Use the task's exact expert and report only a completed real dialogue."""
+        return self.fire_named_expert(
+            "expert_use_douyinyin",
+            "请给一个刚起步的抖音知识分享账号制定三条可执行的内容建议，并说明首周应观察哪些数据。请简洁回答。")
+
+    def fire_maidehao_expert(self) -> dict:
+        return self.fire_named_expert(
+            "expert_use_maidehao",
+            "请为一家刚开天猫店的国产护肤品牌给出三条首月运营建议，并说明应重点关注哪些指标。请简洁回答。")
+
+    def fire_shangjia_xuanchuan_expert(self) -> dict:
+        return self.fire_named_expert(
+            "expert_use_shangjia_xuanchuan",
+            "请为一家社区咖啡店的周末新品活动写一段宣传页文案，并给出海报的版式与配色建议。请简洁回答。")
+
+    def fire_bowangwang_expert(self) -> dict:
+        return self.fire_named_expert(
+            "expert_use_bowangwang",
+            "请给一位刚开始在抖音直播卖农产品的新主播三条开播建议，并说明首场直播后应复盘哪些数据。请简洁回答。")
+
+    def fire_valorant_expert(self) -> dict:
+        return self.fire_named_expert(
+            "WorkBuddy_Valorant",
+            "我想用拼豆做一个无畏契约角色的小挂件，请推荐一个适合新手的角色，并给出尺寸、配色和制作步骤建议。请简洁回答。")
+
+    def fire_named_expert(self, task_code: str, question: str) -> dict:
+        """Use the task's exact expert and report only a completed real dialogue.
+
+        The expert comes from the task's official deeplink. A task whose link
+        carries no id (``workbuddy://expert``) falls back to the one market
+        expert whose display name exactly matches the name in the task title.
+        """
         import io
         import zipfile
         from urllib.parse import parse_qs, urlparse
@@ -1075,13 +1105,29 @@ class AccountSession:
             return {"ok": False, "status": 0, "msg": message}
 
         tasks = self.growth_tasks()
-        task = next((t for t in tasks if t.get("task_code") == "expert_use_douyinyin"), {})
-        jump = urlparse(task.get("jump_url") or "")
-        if jump.scheme != "https" or jump.hostname != "www.workbuddy.cn":
-            return failed("任务缺少官方专家入口，未执行")
-        deep = urlparse(parse_qs(jump.query).get("deeplink", [""])[0])
-        eid = parse_qs(deep.query).get("expertId", [""])[0]
-        if deep.scheme != "workbuddy" or deep.netloc != "experts" or not re.fullmatch(r"ex_[A-Za-z0-9_]+", eid):
+        task = next((t for t in tasks if t.get("task_code") == task_code), {})
+        link = task.get("jump_url") or ""
+        if link == "workbuddy://expert":
+            title = re.search(r"「([^」]+)」", task.get("title") or "")
+            if not title:
+                return failed("任务标题缺少专家名称，未执行")
+            wanted = title.group(1)
+            listed = self._chat_json("/v2/operation-platform/market/expert/list",
+                                     {"page": 1, "page_size": 50, "keyword": wanted})
+            ids = {e.get("expert_id") for e in listed.get("experts") or []
+                   if e.get("display_name_zh") == wanted and e.get("expert_id")}
+            if len(ids) != 1:
+                return failed("专家市场未找到唯一同名专家，未执行")
+            eid = ids.pop()
+        else:
+            jump = urlparse(link)
+            if jump.scheme != "https" or jump.hostname != "www.workbuddy.cn":
+                return failed("任务缺少官方专家入口，未执行")
+            deep = urlparse(parse_qs(jump.query).get("deeplink", [""])[0])
+            eid = parse_qs(deep.query).get("expertId", [""])[0]
+            if deep.scheme != "workbuddy" or deep.netloc != "experts":
+                return failed("任务入口缺少有效专家 ID，未执行")
+        if not re.fullmatch(r"ex_[A-Za-z0-9_]+", eid):
             return failed("任务入口缺少有效专家 ID，未执行")
         data = self._chat_json("/v2/operation-platform/market/expert/get-by-ids",
                                {"expert_ids": [eid], "include_invisible": True})
@@ -1102,7 +1148,8 @@ class AccountSession:
             with self.http_client(timeout=25) as client:
                 package = client.get(url)
             package.raise_for_status()
-            if len(package.content) > 2_000_000:
+            # Packages may bundle images; only the small agent file is read from it.
+            if len(package.content) > 50_000_000:
                 return failed("专家包超过读取上限，未执行")
             with zipfile.ZipFile(io.BytesIO(package.content)) as archive:
                 entry = archive.getinfo("agents/" + agent + ".md")
@@ -1116,7 +1163,6 @@ class AccountSession:
 
         conv = str(uuid.uuid4())
         model = "hy3"
-        question = "请给一个刚起步的抖音知识分享账号制定三条可执行的内容建议，并说明首周应观察哪些数据。请简洁回答。"
         body = {"model": model, "stream": True, "max_tokens": 1200,
                 "messages": [{"role": "system", "content": instructions},
                              {"role": "user", "content": question}],

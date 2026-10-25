@@ -143,6 +143,26 @@ TASK_PLANS: dict[str, TaskPlan] = {
         "抖音策略师：按任务入口定位指定专家，加载官方专家指令并完成一次真实对话后复查",
         times=1, firer="fire_douyin_expert",
     ),
+    "expert_use_maidehao": TaskPlan(
+        "expert_use_maidehao", AUTO, [],
+        "中国电商运营专家：按任务入口定位指定专家，加载官方专家指令并完成一次真实对话后复查",
+        times=1, firer="fire_maidehao_expert",
+    ),
+    "expert_use_shangjia_xuanchuan": TaskPlan(
+        "expert_use_shangjia_xuanchuan", AUTO, [],
+        "商家宣传页与海报设计师：按任务入口定位指定专家，加载官方专家指令并完成一次真实对话后复查",
+        times=1, firer="fire_shangjia_xuanchuan_expert",
+    ),
+    "expert_use_bowangwang": TaskPlan(
+        "expert_use_bowangwang", AUTO, [],
+        "直播电商教练：按任务入口定位指定专家，加载官方专家指令并完成一次真实对话后复查",
+        times=1, firer="fire_bowangwang_expert",
+    ),
+    "WorkBuddy_Valorant": TaskPlan(
+        "WorkBuddy_Valorant", AUTO, [],
+        "无畏契约拼豆专家：入口无专家 ID，按标题在专家市场取唯一同名专家，完成一次真实对话后复查",
+        times=1, firer="fire_valorant_expert",
+    ),
     "template_5": TaskPlan(
         "template_5", MULTI, [],
         "使用模板：用真实场景 id 上报 template 事件（已实测点亮 +100）",

@@ -17,19 +17,35 @@ class DouyinGrowthTests(unittest.TestCase):
         self.assertTrue(task["actionable"])
         self.assertEqual(plan_for(task["task_code"]).firer, "fire_douyin_expert")
 
+    def test_other_expert_tasks_are_registered(self):
+        for code, firer in [("expert_use_maidehao", "fire_maidehao_expert"),
+                            ("expert_use_shangjia_xuanchuan", "fire_shangjia_xuanchuan_expert"),
+                            ("expert_use_bowangwang", "fire_bowangwang_expert"),
+                            ("WorkBuddy_Valorant", "fire_valorant_expert")]:
+            task = classify({"task_code": code, "reward_credit": 50})
+            self.assertTrue(task["actionable"], code)
+            self.assertEqual(task["level"], "auto")
+            self.assertTrue(callable(getattr(AccountSession, firer)), firer)
+
     def test_unknown_and_unrewarded_tasks_remain_disabled(self):
         self.assertFalse(plan_for("expert_use_unknown").actionable)
         self.assertFalse(classify({"task_code": "expert_use_douyinyin", "reward_credit": 0})["actionable"])
 
-    def session(self, *, link=True, expert=True, complete=True, reply=True):
+    def session(self, *, link=True, expert=True, complete=True, reply=True,
+                code="expert_use_douyinyin", listed=None):
         s = AccountSession.__new__(AccountSession)
-        task = {"task_code": "expert_use_douyinyin"}
-        if link:
+        task = {"task_code": code, "title": "体验「无畏契约拼豆专家」"}
+        if link == "bare":
+            task["jump_url"] = "workbuddy://expert"
+        elif link:
             task["jump_url"] = "https://www.workbuddy.cn/work/launch/?deeplink=workbuddy%3A%2F%2Fexperts%3FexpertId%3Dex_target"
         s.growth_tasks = Mock(return_value=[task])
         item = {"expert_id": "ex_target" if expert else "ex_wrong", "agent_name": "douyin-strategist",
                 "display_name_zh": "斗音音", "profession_zh": "抖音策略师", "version": "1.0.2"}
         def api(path, body):
+            if path.endswith("/list"):
+                self.assertEqual(body["keyword"], "无畏契约拼豆专家")
+                return {"experts": listed or []}
             if path.endswith("get-by-ids"):
                 self.assertEqual(body["expert_ids"], ["ex_target"])
                 return {"experts": [item]}
@@ -96,6 +112,27 @@ class DouyinGrowthTests(unittest.TestCase):
         self.assertEqual(event["id"], "ex_target")
         self.assertEqual(event["requestId"], "chatcmpl-real")
         self.assertEqual(event["characterCount"], len(result["reply"]))
+
+
+    def test_bare_link_uses_unique_exact_name_match(self):
+        listed = [{"expert_id": "ex_target", "display_name_zh": "无畏契约拼豆专家"},
+                  {"expert_id": "ex_other", "display_name_zh": "无畏契约拼豆专家（同人）"}]
+        s, calls = self.session(link="bare", code="WorkBuddy_Valorant", listed=listed)
+        result = s.fire_valorant_expert()
+        self.assertTrue(result["ok"])
+        self.assertEqual(calls[1][1][0]["id"], "ex_target")
+
+    def test_bare_link_with_ambiguous_name_is_rejected(self):
+        listed = [{"expert_id": "ex_target", "display_name_zh": "无畏契约拼豆专家"},
+                  {"expert_id": "ex_copy", "display_name_zh": "无畏契约拼豆专家"}]
+        s, calls = self.session(link="bare", code="WorkBuddy_Valorant", listed=listed)
+        self.assertFalse(s.fire_valorant_expert()["ok"])
+        self.assertEqual(calls, [])
+
+    def test_wrapper_uses_its_own_task_link(self):
+        s, calls = self.session(code="expert_use_maidehao")
+        self.assertTrue(s.fire_maidehao_expert()["ok"])
+        self.assertFalse(s.fire_bowangwang_expert()["ok"])
 
 
 if __name__ == "__main__":

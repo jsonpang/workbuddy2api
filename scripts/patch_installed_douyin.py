@@ -17,6 +17,8 @@ import zlib
 
 MAGIC = b"MEI\014\013\012\013\016"
 BASE_SHA256 = "110027f31bfbd0bb40f0e997ffd988e18bd21370d7ab4c6742742190f31a543b"
+INJECTED = ("fire_named_expert", "fire_douyin_expert", "fire_maidehao_expert",
+            "fire_shangjia_xuanchuan_expert", "fire_bowangwang_expert", "fire_valorant_expert")
 
 
 def semantic(code):
@@ -58,9 +60,10 @@ def patch(input_path, output_path, baseline_source):
             else:
                 tree = ast.parse((root / "admin/backend.py").read_text(encoding="utf-8"))
                 cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "AccountSession")
-                method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "fire_douyin_expert")
-                wrapper = compile("exec('__ORIGINAL_BACKEND_CODE__')\n" + ast.unparse(method)
-                                  + "\nAccountSession.fire_douyin_expert = fire_douyin_expert\ndel fire_douyin_expert\n",
+                methods = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in INJECTED]
+                assert sorted(m.name for m in methods) == sorted(INJECTED), "Missing injected method"
+                wrapper = compile("exec('__ORIGINAL_BACKEND_CODE__')\n" + "".join(
+                    ast.unparse(m) + f"\nAccountSession.{m.name} = {m.name}\ndel {m.name}\n" for m in methods),
                                   original.co_filename, "exec")
                 replacement = wrapper.replace(co_consts=tuple(original if c == "__ORIGINAL_BACKEND_CODE__" else c
                                                                for c in wrapper.co_consts))
