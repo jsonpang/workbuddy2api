@@ -1065,6 +1065,113 @@ class AccountSession:
         }
         return self.report_billing_event([ev])
 
+    def fire_douyin_expert(self) -> dict:
+        """Use the task's exact expert and report only a completed real dialogue."""
+        import io
+        import zipfile
+        from urllib.parse import parse_qs, urlparse
+
+        def failed(message):
+            return {"ok": False, "status": 0, "msg": message}
+
+        tasks = self.growth_tasks()
+        task = next((t for t in tasks if t.get("task_code") == "expert_use_douyinyin"), {})
+        jump = urlparse(task.get("jump_url") or "")
+        if jump.scheme != "https" or jump.hostname != "www.workbuddy.cn":
+            return failed("任务缺少官方专家入口，未执行")
+        deep = urlparse(parse_qs(jump.query).get("deeplink", [""])[0])
+        eid = parse_qs(deep.query).get("expertId", [""])[0]
+        if deep.scheme != "workbuddy" or deep.netloc != "experts" or not re.fullmatch(r"ex_[A-Za-z0-9_]+", eid):
+            return failed("任务入口缺少有效专家 ID，未执行")
+        data = self._chat_json("/v2/operation-platform/market/expert/get-by-ids",
+                               {"expert_ids": [eid], "include_invisible": True})
+        experts = data.get("experts") or data.get("items") or []
+        expert = next((e for e in experts if e.get("expert_id") == eid), None)
+        if not expert:
+            return failed("任务指定专家不可用，未使用其他同名专家替代")
+        agent = expert.get("agent_name") or ""
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", agent):
+            return failed("专家缺少有效运行入口，未执行")
+        download = self._chat_json("/v2/operation-platform/market/expert/download-url", {"expert_id": eid})
+        url = download.get("download_url") or ""
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        if parsed.scheme != "https" or not any(host.endswith("." + domain) for domain in ("codebuddy.cn", "myqcloud.com", "tencent.com")):
+            return failed("官方专家包地址不可用，未执行")
+        try:
+            with self.http_client(timeout=25) as client:
+                package = client.get(url)
+            package.raise_for_status()
+            if len(package.content) > 2_000_000:
+                return failed("专家包超过读取上限，未执行")
+            with zipfile.ZipFile(io.BytesIO(package.content)) as archive:
+                entry = archive.getinfo("agents/" + agent + ".md")
+                if entry.file_size > 128_000:
+                    return failed("专家指令超过读取上限，未执行")
+                instructions = archive.read(entry).decode("utf-8-sig")
+        except Exception:
+            return failed("读取官方专家指令失败，未执行对话")
+        if not instructions.strip():
+            return failed("官方专家指令为空，未执行对话")
+
+        conv = str(uuid.uuid4())
+        model = "hy3"
+        question = "请给一个刚起步的抖音知识分享账号制定三条可执行的内容建议，并说明首周应观察哪些数据。请简洁回答。"
+        body = {"model": model, "stream": True, "max_tokens": 1200,
+                "messages": [{"role": "system", "content": instructions},
+                             {"role": "user", "content": question}],
+                "extra_vars": {"expert_id": eid, "conversation_id": conv}}
+        reply, response_id, actual_model, completed = [], "", model, False
+        headers = self.cm.get_headers()
+        headers["Content-Type"] = "application/json"
+        try:
+            deadline = time.monotonic() + 90
+            with self.http_client(timeout=httpx.Timeout(30, connect=5)) as client:
+                with client.stream("POST", f"{BACKEND}/v2/chat/completions", headers=headers, json=body) as response:
+                    if response.status_code != 200:
+                        return failed(f"专家对话 HTTP {response.status_code}")
+                    for line in response.iter_lines():
+                        if time.monotonic() >= deadline:
+                            return failed("专家对话超时，未上报完成")
+                        if not line.startswith("data:"):
+                            continue
+                        raw = line[5:].strip()
+                        if raw == "[DONE]":
+                            completed = True
+                            break
+                        try:
+                            chunk = json.loads(raw)
+                        except (TypeError, ValueError):
+                            continue
+                        if chunk.get("error"):
+                            return failed("专家对话返回错误，未上报完成")
+                        response_id = chunk.get("id") or response_id
+                        actual_model = chunk.get("model") or actual_model
+                        for choice in chunk.get("choices") or []:
+                            text = (choice.get("delta") or {}).get("content")
+                            if isinstance(text, str):
+                                reply.append(text)
+                            if choice.get("finish_reason"):
+                                completed = True
+                        if completed:
+                            break
+        except Exception:
+            return failed("专家对话网络失败，未上报完成")
+        answer = "".join(reply)
+        if not completed or not answer.strip() or not response_id:
+            return failed("专家对话未完整返回有效内容，未上报完成")
+        now = int(time.time() * 1000)
+        name = expert.get("display_name_zh") or expert.get("profession_zh") or eid
+        event = {"eventCode": "expert_actual_use", "timestamp": now, "reportDelay": 0,
+                 "mode": "CLOUD", "id": eid, "name": name, "expertTitle": name,
+                 "type": (expert.get("categories") or [""])[0],
+                 "expertType": expert.get("expert_type") or "agent", "source": "builtin",
+                 "version": expert.get("version") or "", "characterCount": len(answer),
+                 "conversationId": conv, "requestId": response_id, "messageId": response_id,
+                 "requestModelId": actual_model, "requestModelName": actual_model, "userId": self._uid()}
+        result = self.report_billing_event([event])
+        return {**result, "expert_id": eid, "reply": answer}
+
     def fire_expert_team(self) -> dict:
         """召唤专家团任务：只取 expert_type=team 的真实团队。"""
         return self.fire_expert_use(team_only=True)

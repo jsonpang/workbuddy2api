@@ -138,6 +138,11 @@ TASK_PLANS: dict[str, TaskPlan] = {
         "召唤专家：用市场真实专家 id 上报 expert_actual_use（已实测点亮 +100）",
         firer="fire_expert_use",
     ),
+    "expert_use_douyinyin": TaskPlan(
+        "expert_use_douyinyin", AUTO, [],
+        "抖音策略师：按任务入口定位指定专家，加载官方专家指令并完成一次真实对话后复查",
+        times=1, firer="fire_douyin_expert",
+    ),
     "template_5": TaskPlan(
         "template_5", MULTI, [],
         "使用模板：用真实场景 id 上报 template 事件（已实测点亮 +100）",
